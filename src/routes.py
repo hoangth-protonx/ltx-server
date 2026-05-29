@@ -3,10 +3,11 @@
 import uuid
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from PIL import Image
 
 from src.models import (
@@ -77,6 +78,8 @@ async def generate_video_endpoint(
     image_start: Optional[UploadFile] = File(None, description="Starting image"),
     image_end: Optional[UploadFile] = File(None, description="Ending image"),
     audio_guide: Optional[UploadFile] = File(None, description="Audio guide file"),
+    input_video: Optional[UploadFile] = File(None, description="Input video to continue from"),
+    video_prompt_type: str = Form("", description="Video prompt type (V=continue video, L=continue last, G=guided)"),
     width: int = Form(768, description="Video width (divisible by 64)"),
     height: int = Form(512, description="Video height (divisible by 64)"),
     num_frames: int = Form(121, description="Number of frames"),
@@ -84,6 +87,9 @@ async def generate_video_endpoint(
     num_inference_steps: str = Form("", description="Denoising steps"),
     guidance_scale: str = Form("", description="CFG scale"),
     seed: str = Form("", description="Random seed"),
+    input_video_strength: str = Form("1.0", description="Input video influence strength (0.0-1.0)"),
+    denoising_strength: str = Form("1.0", description="Denoising strength (0.0-1.0)"),
+    prefix_frames_count: int = Form(0, description="Number of prefix frames from input video"),
     attention: Optional[str] = Form(None, description="Attention mode"),
     sliding_window_size: int = Form(481, description="Sliding window size"),
     sliding_window_overlap: int = Form(17, description="Sliding window overlap"),
@@ -110,12 +116,15 @@ async def generate_video_endpoint(
     parsed_steps = int(num_inference_steps) if num_inference_steps.strip() else None
     parsed_guidance = float(guidance_scale) if guidance_scale.strip() else None
     parsed_seed = int(seed) if seed.strip() else None
+    parsed_video_strength = float(input_video_strength) if input_video_strength.strip() else 1.0
+    parsed_denoising = float(denoising_strength) if denoising_strength.strip() else 1.0
 
     # Save uploaded files
     upload_dir = Path(config.upload_dir)
     image_start_path = await _save_upload(image_start, upload_dir)
     image_end_path = await _save_upload(image_end, upload_dir)
     audio_guide_path = await _save_upload(audio_guide, upload_dir)
+    input_video_path = await _save_upload(input_video, upload_dir)
 
     # Validate uploaded files
     if image_start_path and not is_valid_image(image_start_path):
@@ -139,6 +148,8 @@ async def generate_video_endpoint(
         "image_start_path": image_start_path,
         "image_end_path": image_end_path,
         "audio_guide_path": audio_guide_path,
+        "input_video_path": input_video_path,
+        "video_prompt_type": video_prompt_type,
         "width": width,
         "height": height,
         "num_frames": num_frames,
@@ -146,6 +157,9 @@ async def generate_video_endpoint(
         "num_inference_steps": parsed_steps,
         "guidance_scale": parsed_guidance,
         "seed": parsed_seed,
+        "input_video_strength": parsed_video_strength,
+        "denoising_strength": parsed_denoising,
+        "prefix_frames_count": prefix_frames_count,
         "attention": attention,
         "sliding_window_size": sliding_window_size,
         "sliding_window_overlap": sliding_window_overlap,
@@ -229,6 +243,98 @@ async def get_models():
     )
 
 
+# ===== LoRA Endpoints =====
+
+class LoRALoadRequest(BaseModel):
+    """Request to load a LoRA"""
+    lora_path: str
+    multiplier: float = Field(1.0, ge=0.0, le=5.0)
+    activate: bool = True
+
+class LoRAMultiplierRequest(BaseModel):
+    """Request to update LoRA multiplier"""
+    lora_path: str
+    multiplier: float = Field(..., ge=0.0, le=5.0)
+
+class LoRAStatusResponse(BaseModel):
+    """LoRA status response"""
+    loaded_loras: List[Dict[str, Any]]
+    active_loras: List[str]
+
+
+@router.post("/loras/load")
+async def load_lora(request: LoRALoadRequest):
+    """Load a LoRA weight file"""
+    if not model_manager.is_loaded:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    success = model_manager.lora_manager.load_lora(
+        lora_path=request.lora_path,
+        multiplier=request.multiplier,
+        activate=request.activate
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to load LoRA")
+    
+    return {
+        "message": "LoRA loaded successfully",
+        "lora_path": request.lora_path,
+        "multiplier": request.multiplier
+    }
+
+
+@router.get("/loras", response_model=LoRAStatusResponse)
+async def get_loras():
+    """Get list of loaded LoRAs"""
+    return LoRAStatusResponse(
+        loaded_loras=model_manager.lora_manager.get_loaded_loras(),
+        active_loras=model_manager.lora_manager.get_active_loras()
+    )
+
+
+@router.post("/loras/multiplier")
+async def set_lora_multiplier(request: LoRAMultiplierRequest):
+    """Update LoRA multiplier"""
+    try:
+        model_manager.lora_manager.set_lora_multiplier(
+            lora_path=request.lora_path,
+            multiplier=request.multiplier
+        )
+        return {"message": "Multiplier updated", "lora_path": request.lora_path, "multiplier": request.multiplier}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/loras/{lora_path:path}/activate")
+async def activate_lora(lora_path: str):
+    """Activate a loaded LoRA"""
+    try:
+        model_manager.lora_manager.activate_lora(lora_path)
+        return {"message": "LoRA activated", "lora_path": lora_path}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/loras/{lora_path:path}/deactivate")
+async def deactivate_lora(lora_path: str):
+    """Deactivate a loaded LoRA"""
+    try:
+        model_manager.lora_manager.deactivate_lora(lora_path)
+        return {"message": "LoRA deactivated", "lora_path": lora_path}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/loras/{lora_path:path}")
+async def unload_lora(lora_path: str):
+    """Unload a LoRA"""
+    success = model_manager.lora_manager.unload_lora(lora_path)
+    if not success:
+        raise HTTPException(status_code=404, detail="LoRA not found")
+    return {"message": "LoRA unloaded", "lora_path": lora_path}
+
+
 async def _process_task(task_id: str):
     """Process a generation task in background"""
     task_queue.set_processing(task_id)
@@ -249,6 +355,8 @@ async def _process_task(task_id: str):
             image_start_path=params["image_start_path"],
             image_end_path=params["image_end_path"],
             audio_guide_path=params["audio_guide_path"],
+            input_video_path=params["input_video_path"],
+            video_prompt_type=params.get("video_prompt_type", ""),
             width=params["width"],
             height=params["height"],
             num_frames=params["num_frames"],
@@ -256,6 +364,9 @@ async def _process_task(task_id: str):
             num_inference_steps=params["num_inference_steps"],
             guidance_scale=params["guidance_scale"],
             seed=params["seed"],
+            input_video_strength=params.get("input_video_strength", 1.0),
+            denoising_strength=params.get("denoising_strength", 1.0),
+            prefix_frames_count=params.get("prefix_frames_count", 0),
             attention=params.get("attention"),
             sliding_window_size=params["sliding_window_size"],
             sliding_window_overlap=params["sliding_window_overlap"],
@@ -294,6 +405,14 @@ async def _save_upload(file: Optional[UploadFile], upload_dir: Path) -> Optional
     if not file:
         return None
 
+    # Read content first to check if it's actually a file
+    content = await file.read()
+
+    # If the file is empty (0 bytes), skip it entirely
+    if len(content) == 0:
+        print(f"  Skipping empty upload: {file.filename or 'unknown'}")
+        return None
+
     # Handle missing or empty filename
     original_filename = file.filename or ""
     if original_filename.strip():
@@ -318,7 +437,6 @@ async def _save_upload(file: Optional[UploadFile], upload_dir: Path) -> Optional
 
     file_path = upload_dir / filename
 
-    content = await file.read()
     with open(file_path, "wb") as f:
         f.write(content)
 

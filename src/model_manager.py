@@ -6,13 +6,15 @@ import torch
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
-from ltx2 import ltx2_handler
-from ltx2.ltx2 import LTX2
-from ltx2.ltx2_handler import _resolve_multi_file_paths
+from models.ltx2 import ltx2_handler
+from models.ltx2.ltx2 import LTX2
+from models.ltx2.ltx2_handler import _resolve_multi_file_paths
+from models.ltx2.ltx2 import _attach_lora_preprocessor
 from shared.utils import files_locator as fl
 from mmgp import offload
 
 from src.config import ServerConfig
+from src.lora_manager import lora_manager
 
 
 class ModelManager:
@@ -23,11 +25,17 @@ class ModelManager:
         self.offload_obj: Optional[Any] = None
         self.model_type: Optional[str] = None
         self.model_def: Optional[dict] = None
+        self.transformer = None  # Reference to transformer for LoRA loading
     
     @property
     def is_loaded(self) -> bool:
         """Check if model is loaded"""
         return self.ltx2_instance is not None
+    
+    @property
+    def lora_manager(self):
+        """Get LoRA manager instance"""
+        return lora_manager
     
     def load(self, config: ServerConfig) -> None:
         """Load LTX-2 model into memory"""
@@ -39,6 +47,30 @@ class ModelManager:
         
         self.ltx2_instance, self.offload_obj, self.model_def = _load_ltx2_model(config)
         self.model_type = config.model_type
+        
+        # Get transformer reference for LoRA loading
+        self.transformer = self.ltx2_instance.model
+        
+        # Initialize LoRA manager
+        lora_manager.initialize(self.transformer, config.model_type)
+        
+        # Auto-load LoRAs from directory if specified
+        if config.lora_dir and config.lora_dir.strip():
+            if os.path.isdir(config.lora_dir):
+                print(f"\nAuto-loading LoRAs from: {config.lora_dir}")
+                loaded_loras = lora_manager.load_loras_from_directory(
+                    directory=config.lora_dir,
+                    default_multiplier=1.0,
+                    activate=True
+                )
+                if loaded_loras:
+                    print(f"✓ Auto-loaded {len(loaded_loras)} LoRA(s)")
+                else:
+                    print("⚠ No LoRAs loaded from directory")
+            else:
+                print(f"⚠ LoRA directory not found: {config.lora_dir}")
+        else:
+            print("No LoRA directory specified, skipping auto-load")
         
         load_time = time.time() - start_time
         print(f"✓ Model loaded in {load_time:.2f} seconds")
@@ -168,11 +200,22 @@ def _load_ltx2_model(
     
     # Setup offloading
     print("Configuring memory offloading...")
+    
+    # Declare which components can accept LoRA weights
+    # This is required for LoRA loading to work
+    loras_components = ["transformer"]
+    if ltx2_instance.model2 is not None:
+        loras_components.append("transformer2")
+    # Add text encoder components for LTX-2 (non-distilled)
+    if model_def.get("ltx2_pipeline", "") != "distilled":
+        loras_components.extend(["text_embedding_projection", "text_embeddings_connector"])
+    
     offload_obj = offload.profile(
         pipe,
         profile_no=profile if profile >= 0 else 2,
         quantizeTransformer=False,
         vram_safety_coefficient=vram_safety_coefficient,
+        loras=loras_components,  # Enable LoRA support
     )
     
     return ltx2_instance, offload_obj, model_def

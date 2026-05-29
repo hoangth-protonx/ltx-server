@@ -1,6 +1,4 @@
-/**
- * LTX-2 Video Generator - Frontend Application
- */
+
 
 // ===== State Management =====
 const state = {
@@ -25,6 +23,7 @@ const elements = {
     submitBtn: document.getElementById('submitBtn'),
     statusIndicator: document.getElementById('statusIndicator'),
     statusText: document.getElementById('statusText'),
+    modelInfo: document.getElementById('modelInfo'),
     emptyState: document.getElementById('emptyState'),
     activeTask: document.getElementById('activeTask'),
     taskId: document.getElementById('taskId'),
@@ -62,16 +61,28 @@ function randomSeed() {
 }
 
 function showToast(message, type = 'info') {
+    const icons = { success: 'check_circle', error: 'error', warning: 'warning', info: 'info' };
+    const colors = { success: 'var(--success)', error: 'var(--error)', warning: 'var(--warning)', info: 'var(--info)' };
+
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
-    toast.textContent = message;
-    
+    toast.innerHTML = `
+        <span class="material-symbols-outlined" style="font-size:18px;color:${colors[type]}">${icons[type]}</span>
+        <div class="toast-body">
+            <div class="toast-message">${message}</div>
+        </div>
+        <button class="toast-close-btn" onclick="this.parentElement.remove()">
+            <span class="material-symbols-outlined" style="font-size:14px">close</span>
+        </button>
+    `;
+
     elements.toastContainer.appendChild(toast);
-    
+
     setTimeout(() => {
-        toast.style.animation = 'slideIn 0.3s ease reverse';
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.3s';
         setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, 4000);
 }
 
 // ===== File Upload Handling =====
@@ -80,13 +91,14 @@ function setupFileUploads() {
         'image_start': { box: 'imageStartBox', preview: 'imageStartPreview', img: 'imageStartImg' },
         'image_end': { box: 'imageEndBox', preview: 'imageEndPreview', img: 'imageEndImg' },
         'audio_guide': { box: 'audioBox', preview: 'audioPreview' },
+        'input_video': { box: 'inputVideoBox', preview: 'videoPreview' },
     };
 
     Object.entries(uploads).forEach(([inputId, config]) => {
         const input = document.getElementById(inputId);
         const box = document.getElementById(config.box);
         const preview = document.getElementById(config.preview);
-        
+
         input.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -101,6 +113,10 @@ function setupFileUploads() {
                 reader.readAsDataURL(file);
             } else if (inputId === 'audio_guide') {
                 document.getElementById('audioFileName').textContent = file.name;
+            } else if (inputId === 'input_video') {
+                const videoPlayer = document.getElementById('videoPreviewPlayer');
+                const url = URL.createObjectURL(file);
+                videoPlayer.src = url;
             }
         });
     });
@@ -112,12 +128,22 @@ function removeUpload(inputId) {
         'image_start': { box: 'imageStartBox', preview: 'imageStartPreview' },
         'image_end': { box: 'imageEndBox', preview: 'imageEndPreview' },
         'audio_guide': { box: 'audioBox', preview: 'audioPreview' },
+        'input_video': { box: 'inputVideoBox', preview: 'videoPreview' },
     };
 
     const config = configs[inputId];
     input.value = '';
     document.getElementById(config.box).classList.remove('has-file');
     document.getElementById(config.preview).hidden = true;
+
+    // Clear video player source if exists
+    if (inputId === 'input_video') {
+        const videoPlayer = document.getElementById('videoPreviewPlayer');
+        if (videoPlayer.src) {
+            URL.revokeObjectURL(videoPlayer.src);
+            videoPlayer.src = '';
+        }
+    }
 }
 
 // Make removeUpload globally accessible
@@ -131,12 +157,18 @@ async function checkHealth() {
         if (response.ok) {
             const data = await response.json();
             elements.statusIndicator.classList.add('connected');
-            elements.statusText.textContent = `Connected • ${data.model_type || 'Unknown'}`;
+            elements.statusText.textContent = 'Connected';
+            if (elements.modelInfo) {
+                elements.modelInfo.textContent = data.model_type || 'Ready';
+            }
             return true;
         }
     } catch (error) {
         elements.statusIndicator.classList.remove('connected');
         elements.statusText.textContent = 'Disconnected';
+        if (elements.modelInfo) {
+            elements.modelInfo.textContent = 'Offline';
+        }
         return false;
     }
 }
@@ -160,12 +192,12 @@ async function submitTask(formData) {
 
         const data = await response.json();
         state.currentTaskId = data.task_id;
-        
+
         showToast('Task submitted successfully!', 'success');
-        
+
         // Start polling
         startPolling(data.task_id);
-        
+
     } catch (error) {
         showToast(error.message, 'error');
         throw error;
@@ -173,9 +205,7 @@ async function submitTask(formData) {
         state.isSubmitting = false;
         elements.submitBtn.disabled = false;
         elements.submitBtn.innerHTML = `
-            <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-            </svg>
+            <span class="material-symbols-outlined">play_arrow</span>
             Generate Video
         `;
     }
@@ -188,7 +218,7 @@ function startPolling(taskId) {
     elements.taskId.textContent = `Task: ${taskId.substring(0, 8)}...`;
     elements.taskBadge.textContent = 'QUEUED';
     elements.taskBadge.className = 'task-badge queued';
-    
+
     elements.progressContainer.hidden = true;
     elements.errorMessage.hidden = true;
     elements.videoResult.hidden = true;
@@ -227,7 +257,7 @@ function updateTaskUI(data) {
         elements.progressContainer.hidden = false;
         elements.progressFill.style.width = `${data.progress || 0}%`;
         elements.progressPercent.textContent = `${(data.progress || 0).toFixed(1)}%`;
-        
+
         if (data.current_step && data.total_steps) {
             elements.stepInfo.textContent = `Step ${data.current_step} / ${data.total_steps}`;
         }
@@ -239,17 +269,17 @@ function handleTaskComplete(data) {
         elements.progressContainer.hidden = false;
         elements.progressFill.style.width = '100%';
         elements.progressPercent.textContent = '100%';
-        
+
         elements.videoResult.hidden = false;
         elements.videoPlayer.src = API.downloadVideo(data.task_id);
-        
+
         elements.metaSeed.textContent = data.result.seed;
         elements.metaTime.textContent = formatDuration(data.result.generation_time);
         elements.downloadBtn.href = API.downloadVideo(data.task_id);
 
         // Add to history
         addToHistory(data);
-        
+
         showToast('Video generation complete!', 'success');
     } else if (data.status === 'failed') {
         elements.errorMessage.hidden = false;
@@ -278,7 +308,7 @@ function addToHistory(taskData) {
 
     state.taskHistory.unshift(historyItem);
     if (state.taskHistory.length > 10) state.taskHistory.pop();
-    
+
     renderTaskHistory();
 }
 
@@ -286,7 +316,7 @@ function renderTaskHistory() {
     if (state.taskHistory.length === 0) {
         elements.taskHistoryList.innerHTML = `
             <div class="empty-history">
-                <small>No completed tasks</small>
+                <small>No completed tasks yet</small>
             </div>
         `;
         return;
@@ -298,7 +328,7 @@ function renderTaskHistory() {
                 <div class="task-history-thumb"></div>
                 <div class="task-history-info">
                     <div class="task-history-prompt">${truncate(item.prompt, 50)}</div>
-                    <div class="task-history-meta">Seed: ${item.seed} • ${formatDuration(item.time)} • ${item.completedAt}</div>
+                    <div class="task-history-meta">Seed: ${item.seed} · ${formatDuration(item.time)} · ${item.completedAt}</div>
                 </div>
             </div>
         `)
@@ -308,7 +338,8 @@ function renderTaskHistory() {
 function loadTask(taskId) {
     state.currentTaskId = taskId;
     startPolling(taskId);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Scroll to results
+    document.querySelector('.page-body').scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 window.loadTask = loadTask;
@@ -321,19 +352,37 @@ function setupFormSubmission() {
         const formData = new FormData(elements.form);
 
         // Debug: log what's being sent
-        console.log('[Form Submit] Sending form data:');
+        console.log('[Form Submit] Raw form data before cleanup:');
+        for (let [key, value] of formData.entries()) {
+            if (value instanceof File) {
+                console.log(`  ${key}: File(name="${value.name}", size=${value.size}, type="${value.type}")`);
+            } else {
+                console.log(`  ${key}: "${value}"`);
+            }
+        }
+
+        // Remove empty values and empty files
+        const keysToRemove = [];
+        for (let [key, value] of formData.entries()) {
+            if (value === '' || value === null) {
+                keysToRemove.push(key);
+            }
+            if (value instanceof File) {
+                // Remove files with no name and no size (empty file inputs)
+                if (value.name === '' && value.size === 0) {
+                    keysToRemove.push(key);
+                    console.log(`  Removing empty file: ${key}`);
+                }
+            }
+        }
+        keysToRemove.forEach(key => formData.delete(key));
+
+        console.log('[Form Submit] Form data after cleanup:');
         for (let [key, value] of formData.entries()) {
             if (value instanceof File) {
                 console.log(`  ${key}: File(${value.name}, ${value.size} bytes)`);
             } else {
                 console.log(`  ${key}: ${value}`);
-            }
-        }
-
-        // Remove empty values
-        for (let [key, value] of formData.entries()) {
-            if (value === '' || value === null) {
-                formData.delete(key);
             }
         }
 
@@ -360,7 +409,7 @@ async function init() {
     // Render task history
     renderTaskHistory();
 
-    console.log('LTX-2 Video Generator initialized');
+    console.log('Video Generator initialized');
 }
 
 // Start app when DOM is ready

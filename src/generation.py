@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from PIL import Image
-
+from pathlib import Path
 from shared.utils.utils import sanitize_file_name
 from shared.utils.audio_video import (
     save_video as save_video_file,
@@ -27,6 +27,8 @@ def generate_video(
     image_start_path: Optional[str] = None,
     image_end_path: Optional[str] = None,
     audio_guide_path: Optional[str] = None,
+    input_video_path: Optional[str] = None,
+    video_prompt_type: str = "",
     width: int = 768,
     height: int = 512,
     num_frames: int = 121,
@@ -34,6 +36,9 @@ def generate_video(
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     seed: Optional[int] = None,
+    input_video_strength: float = 1.0,
+    denoising_strength: float = 1.0,
+    prefix_frames_count: int = 0,
     attention: Optional[str] = None,
     sliding_window_size: int = 481,
     sliding_window_overlap: int = 17,
@@ -66,12 +71,58 @@ def generate_video(
     print(f"  Seed: {seed}")
     print(f"  Image Start: {image_start_path if image_start_path else 'None'}")
     print(f"  Image End: {image_end_path if image_end_path else 'None'}")
+    print(f"  Input Video: {input_video_path if input_video_path else 'None'}")
+    print(f"  Video Prompt Type: '{video_prompt_type}' (len={len(video_prompt_type)})")
     print(f"  Audio Guide: {audio_guide_path if audio_guide_path else 'None'}")
-    
+    print(f"  Video Strength: {input_video_strength}")
+    print(f"  Denoising Strength: {denoising_strength}")
+    print(f"  Prefix Frames: {prefix_frames_count}")
+
     # Load images if provided
     image_start = Image.open(image_start_path).convert("RGB") if image_start_path else None
     image_end = Image.open(image_end_path).convert("RGB") if image_end_path else None
+
+    # Load input video if provided
+    input_video = None
+    if input_video_path:
+        print(f"  Loading input video from: {input_video_path}")
+        try:
+            # Use OpenCV to read video frames
+            import cv2
+            cap = cv2.VideoCapture(input_video_path)
+            frames = []
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame)
+            cap.release()
+
+            if frames:
+                # Convert to tensor [F, H, W, C] then transpose to [C, F, H, W]
+                frames_np = np.array(frames).astype(np.float32) / 255.0 * 2.0 - 1.0  # Normalize to [-1, 1]
+                frames_np = np.transpose(frames_np, (3, 0, 1, 2))  # [F,H,W,C] -> [C,F,H,W]
+                input_video = torch.from_numpy(frames_np)
+                video_h, video_w = frames_np.shape[2], frames_np.shape[3]
+                print(f"  Video loaded: {len(frames)} frames, shape={input_video.shape}")
+                print(f"  Video resolution: {video_w}x{video_h}, Target: {width}x{height}")
+                if video_w != width or video_h != height:
+                    print(f"  WARNING: Resolution mismatch! Input video may not align properly.")
+                # Auto-set prefix_frames_count to use all frames from input video
+                if prefix_frames_count == 0:
+                    prefix_frames_count = len(frames)
+                    print(f"  Auto-set prefix_frames_count to {prefix_frames_count} (all frames)")
+            else:
+                print(f"  Warning: No frames extracted from video")
+        except Exception as e:
+            print(f"  Error loading video: {e}")
+            input_video = None
     
+    if input_video is not None:
+        print(f"  DEBUG: input_video shape = {input_video.shape}, dtype = {input_video.dtype}")
+        print(f"  DEBUG: input_video value_range = [{input_video.min():.2f}, {input_video.max():.2f}]")
+        print(f"  DEBUG: FPS: {fps}, num_frames: {num_frames}, expected_duration: {num_frames/fps:.1f}s")
     # Load audio if provided
     input_waveform = None
     input_waveform_sample_rate = None
@@ -119,11 +170,18 @@ def generate_video(
     print(f"  Passing to model:")
     print(f"    image_start: {'Yes (PIL Image)' if image_start is not None else 'None'}")
     print(f"    image_end: {'Yes (PIL Image)' if image_end is not None else 'None'}")
+    print(f"    input_video: {'Yes' if input_video is not None else 'None'}")
     print(f"    input_waveform: {'Yes' if input_waveform is not None else 'None'}")
     print(f"    input_waveform_sample_rate: {input_waveform_sample_rate}")
-    
+    print(f"    input_video_strength: {input_video_strength}")
+    print(f"    denoising_strength: {denoising_strength}")
+    print(f"    prefix_frames_count: {prefix_frames_count}")
+    print(f"    video_prompt_type to model: '{video_prompt_type}'")
+    print(f"    'G' in video_prompt_type: {'G' in video_prompt_type}")
+    print(f"    'V' in video_prompt_type: {'V' in video_prompt_type}")
+
     start_time = time.time()
-    
+
     result = model_manager.generate(
         input_prompt=prompt,
         n_prompt=negative_prompt if negative_prompt else None,
@@ -132,8 +190,9 @@ def generate_video(
         sampling_steps=num_inference_steps,
         guide_scale=guidance_scale,
         alt_guide_scale=1.0,
-        input_video=None,
-        prefix_frames_count=0,
+        input_video=input_video,
+        input_frames=input_video,  # For video_conditioning (like wgp.py does)
+        prefix_frames_count=prefix_frames_count,
         frame_num=num_frames,
         height=height,
         width=width,
@@ -144,8 +203,9 @@ def generate_video(
         input_waveform=input_waveform,
         input_waveform_sample_rate=input_waveform_sample_rate,
         audio_scale=1.0,
-        sliding_window_size=sliding_window_size,
-        sliding_window_overlap=sliding_window_overlap,
+        video_prompt_type=video_prompt_type,
+        input_video_strength=input_video_strength,
+        denoising_strength=denoising_strength,
     )
     
     gen_time = time.time() - start_time
@@ -185,9 +245,9 @@ def save_video_result(
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     if prompt:
         prompt_preview = sanitize_file_name(prompt[:50])
-        filename = f"ltx2_{timestamp}_{prompt_preview}_seed{seed}.mp4"
+        filename = f"{timestamp}_{prompt_preview}_seed{seed}.mp4"
     else:
-        filename = f"ltx2_{timestamp}_seed{seed}.mp4"
+        filename = f"{timestamp}_seed{seed}.mp4"
 
     if not filename.endswith(".mp4"):
         filename += ".mp4"

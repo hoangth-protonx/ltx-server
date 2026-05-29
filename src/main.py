@@ -56,6 +56,7 @@ def set_config(config: ServerConfig):
         "model_type": config.model_type,
         "transformer_path": config.transformer_path,
         "gemma_path": config.gemma_path,
+        "lora_dir": config.lora_dir,
         "profile": config.profile,
         "vram_safety_coefficient": config.vram_safety_coefficient,
         "output_dir": config.output_dir,
@@ -87,7 +88,7 @@ def _create_app_with_config(config: ServerConfig) -> FastAPI:
     async def lifespan(app: FastAPI):
         """Startup and shutdown"""
         print("=" * 60)
-        print("LTX-2 FastAPI Server Starting")
+        print("FastAPI Server Starting")
         print(f"  Model: {config.model_type}")
         print(f"  Profile: {config.profile}")
         print(f"  VRAM Safety: {config.vram_safety_coefficient}")
@@ -110,10 +111,11 @@ def _create_app_with_config(config: ServerConfig) -> FastAPI:
     
     # Create app
     app = FastAPI(
-        title="LTX-2 Video Generation API",
-        description="FastAPI server for LTX-2 text/image-to-video generation",
+        title="ProtonX Video Generation API",
+        description="FastAPI server for text/image-to-video generation",
         version="1.0.0",
         lifespan=lifespan,
+
     )
     
     # Register API routes
