@@ -6,10 +6,10 @@ import torch
 from pathlib import Path
 from typing import Optional, Tuple, Any
 
-from models.ltx2 import ltx2_handler
-from models.ltx2.ltx2 import LTX2
-from models.ltx2.ltx2_handler import _resolve_multi_file_paths
-from models.ltx2.ltx2 import _attach_lora_preprocessor
+from ltx2 import ltx2_handler
+from ltx2.ltx2 import LTX2
+from ltx2.ltx2_handler import _resolve_multi_file_paths
+from ltx2.ltx2 import _attach_lora_preprocessor
 from shared.utils import files_locator as fl
 from mmgp import offload
 
