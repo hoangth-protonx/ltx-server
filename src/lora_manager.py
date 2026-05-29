@@ -25,7 +25,7 @@ class LoRAManager:
         
         # Attach LoRA preprocessor if not already present
         if not hasattr(transformer, 'preprocess_loras'):
-            from models.ltx2.ltx2 import _attach_lora_preprocessor
+            from ltx2.ltx2 import _attach_lora_preprocessor
             _attach_lora_preprocessor(transformer)
         
         # Create a preprocessor function with correct signature for load_loras_into_model
